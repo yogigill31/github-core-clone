@@ -14,6 +14,9 @@
 //   5. Close the server and exit 0. The harness then stops the env, which writes the export the scorer
 //      reads.
 //
+// Entry-author addition: SIGTERM/SIGINT close the server cleanly (step 5's close, on signal) instead
+// of the process dying mid-request if the harness stops it before the env says done.
+//
 // main.ts imports its own server and nothing else: no package, no Node built-in, no model call.
 
 import { createApp } from './app.ts';
@@ -86,6 +89,17 @@ async function main(): Promise<void> {
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('the server did not bind an ephemeral TCP port');
   process.stdout.write(`[entry] listening on port ${address.port}\n`);
+
+  // If the harness stops this process mid-trial, close the server instead of dying mid-request:
+  // stop accepting, let in-flight requests drain, then exit 0. The 2 s fallback covers a
+  // connection that never drains, so a signal can never leave the process hanging.
+  const shutdown = (signal: string): void => {
+    process.stdout.write(`[entry] ${signal}: closing server\n`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2_000).unref();
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 
   await register(address.port);
   process.stdout.write('[entry] registered; waiting for the env to say done\n');
